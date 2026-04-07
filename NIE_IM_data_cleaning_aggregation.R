@@ -1,4 +1,5 @@
-setwd("C:/Users/TOURE/Mes documents/REPOSITORIES/IM_raw_data/IM_raw/")
+setwd("C:/Users/TOURE/Documents/PADACORD/IM")
+# setwd("C:/Users/TOURE/Mes documents/REPOSITORIES/IM_raw_data/IM_raw/")
 library(tidyverse)
 library(dplyr)
 library(sf)
@@ -298,11 +299,15 @@ AD <- AC |>
     u5_present = (u5_FM + missed_child)
   )
 
-# Select and prepare final dataset
+# Select and prepare final dataset - FIXED THE MONTH FUNCTION HERE
 AE <- AD |> 
   select(any_of(c("Country", "states", "lgas", "today", "siatype", "vactype", "vactype_other"))) |>
   rename(Region = states, District = lgas, date = today) |>
-  mutate(month = month(date, label = TRUE, abbr = TRUE))
+  mutate(
+    month_num = month(date),
+    month = month(date, label = TRUE),  # This works with lubridate
+    month_abbr = month(date, label = TRUE, abbr = TRUE)  # This also works
+  )
 
 # Add calculated columns
 AE$u5_present <- AD$u5_present
@@ -328,7 +333,15 @@ if ("vactype_other" %in% names(AE)) {
 AF <- AE |> 
   mutate(
     year = year(date),
-    month_abbr = month(date, label = TRUE, abbr = TRUE),
+    Response = case_when(
+      year == 2025 & month_abbr == "Jan" ~ "OBR1",
+      year == 2025 & month_abbr %in% c("Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug") ~ "NIE-2025-04-01_nOPV_NIDs",
+      year == 2025 & month_abbr %in% c("Sep", "Oct", "Nov") ~ "NIE-2025-10-01_nOPV_sNID",
+      year == 2024 ~ "NIE-2024-nOPV2",
+      year == 2023 & month_abbr %in% c("May", "Jun") ~ "NIE-2023-04-02_nOPV",
+      year == 2023 ~ "NIE-2023-07-03_nOPV",
+      TRUE ~ as.character(siatype)
+    ),
     roundNumber = case_when(
       year == 2025 ~ case_when(
         month_abbr %in% c("Jan", "Feb", "Mar", "Apr", "May") ~ "Rnd1",
@@ -351,15 +364,6 @@ AF <- AE |>
         month_abbr == "Dec" ~ "Rnd5"
       ),
       TRUE ~ NA_character_
-    ),
-    Response = case_when(
-      year == 2025 & month_abbr == "Jan" ~ "OBR1",
-      year == 2025 & month_abbr %in% c("Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug") ~ "NIE-2025-04-01_nOPV_NIDs",
-      year == 2025 & month_abbr %in% c("Sep", "Oct", "Nov") ~ "NIE-2025-10-01_nOPV_sNID",
-      year == 2024 ~ "NIE-2024-nOPV2",
-      year == 2023 & month_abbr %in% c("May", "Jun") ~ "NIE-2023-04-02_nOPV",
-      year == 2023 ~ "NIE-2023-07-03_nOPV",
-      TRUE ~ as.character(siatype)
     ),
     Vaccine.type = case_when(
       year >= 2024 ~ "nOPV2",
