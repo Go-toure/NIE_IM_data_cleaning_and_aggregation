@@ -1,5 +1,5 @@
 setwd("C:/Users/TOURE/Documents/PADACORD/IM")
-# setwd("C:/Users/TOURE/Mes documents/REPOSITORIES/IM_raw_data/IM_raw/")
+
 library(tidyverse)
 library(dplyr)
 library(sf)
@@ -11,6 +11,53 @@ library(readxl)
 library(data.table)
 library(arrow)      # For parquet files
 library(qs)         # For qs files
+
+# ============================================================
+# SET LOCALE FOR FRENCH MONTH NAMES
+# ============================================================
+
+# Set locale for French month names (important for reading dates)
+Sys.setlocale("LC_TIME", "French_France.1252")
+# Alternative if the above doesn't work on your system:
+# Sys.setlocale("LC_TIME", "fr_FR.UTF-8")
+
+cat("Current locale for time:", Sys.getlocale("LC_TIME"), "\n")
+
+# ============================================================
+# FUNCTION TO SAFELY CONVERT DATES
+# ============================================================
+
+safe_as_date <- function(x) {
+  if (inherits(x, "Date")) {
+    return(x)
+  }
+  
+  # Try different date formats
+  result <- as.Date(NA)
+  
+  # Try yyyy-mm-dd format first
+  result <- tryCatch(as.Date(x), error = function(e) NA)
+  if (!all(is.na(result))) {
+    return(result)
+  }
+  
+  # Try dd/mm/yyyy format (common in French data)
+  result <- tryCatch(as.Date(x, format = '%d/%m/%Y'), error = function(e) NA)
+  if (!all(is.na(result))) {
+    return(result)
+  }
+  
+  # Try mm/dd/yyyy format
+  result <- tryCatch(as.Date(x, format = '%m/%d/%Y'), error = function(e) NA)
+  if (!all(is.na(result))) {
+    return(result)
+  }
+  
+  # Try using lubridate's parse_date_time
+  result <- tryCatch(as.Date(parse_date_time(x, orders = c("ymd", "dmy", "mdy"))), error = function(e) NA)
+  
+  return(result)
+}
 
 # ============================================================
 # FUNCTION TO READ FILE WITH MULTIPLE METHODS
@@ -243,10 +290,13 @@ if (length(missing_cols) > 0) {
 
 cat("\n📊 Processing Nigeria IM data...\n")
 
-# Convert date
+# Convert date safely
 AC <- AB |> 
   filter(!is.na(today)) |> 
-  mutate(today = as.Date(today)) |>
+  mutate(
+    today = safe_as_date(today)
+  ) |>
+  filter(!is.na(today)) |>  # Remove rows where date conversion failed
   mutate(year = year(today)) |>
   filter(year > 2019)
 
@@ -299,14 +349,14 @@ AD <- AC |>
     u5_present = (u5_FM + missed_child)
   )
 
-# Select and prepare final dataset - FIXED THE MONTH FUNCTION HERE
+# Select and prepare final dataset
 AE <- AD |> 
   select(any_of(c("Country", "states", "lgas", "today", "siatype", "vactype", "vactype_other"))) |>
   rename(Region = states, District = lgas, date = today) |>
   mutate(
-    month_num = month(date),
-    month = month(date, label = TRUE),  # This works with lubridate
-    month_abbr = month(date, label = TRUE, abbr = TRUE)  # This also works
+    # Extract month with French locale support
+    month_name = format(date, "%b"),  # This will use French locale
+    month_num = month(date)
   )
 
 # Add calculated columns
@@ -320,7 +370,7 @@ if ("vactype_other" %in% names(AE)) {
   vactype_mappings <- list(
     "b0pv|bopv" = "bOPV",
     "cmopv2|mopv2|mopv" = "mOPV",
-    "fipv.*|fipv\\+nopv2|fipv plus" = "FIPV+nOPV2",
+    "fipv.*|fipv\\+nopv2|fipv plus|fipv\\+nopv2" = "FIPV+nOPV2",
     "n opv|n opv3|nopv2" = "nOPV2",
     "hpv" = "HPV"
   )
@@ -329,55 +379,79 @@ if ("vactype_other" %in% names(AE)) {
   }
 }
 
-# Assign roundNumber, Response, and Vaccine.type
+# Assign roundNumber using French month names (matching original script)
 AF <- AE |> 
   mutate(
     year = year(date),
-    Response = case_when(
-      year == 2025 & month_abbr == "Jan" ~ "OBR1",
-      year == 2025 & month_abbr %in% c("Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug") ~ "NIE-2025-04-01_nOPV_NIDs",
-      year == 2025 & month_abbr %in% c("Sep", "Oct", "Nov") ~ "NIE-2025-10-01_nOPV_sNID",
-      year == 2024 ~ "NIE-2024-nOPV2",
-      year == 2023 & month_abbr %in% c("May", "Jun") ~ "NIE-2023-04-02_nOPV",
-      year == 2023 ~ "NIE-2023-07-03_nOPV",
-      TRUE ~ as.character(siatype)
-    ),
-    roundNumber = case_when(
-      year == 2025 ~ case_when(
-        month_abbr %in% c("Jan", "Feb", "Mar", "Apr", "May") ~ "Rnd1",
-        month_abbr %in% c("Jun", "Jul", "Aug") ~ "Rnd2",
-        month_abbr %in% c("Sep", "Oct", "Nov") ~ "Rnd3",
-        month_abbr == "Dec" ~ "Rnd4"
-      ),
-      year == 2024 ~ case_when(
-        month_abbr %in% c("Feb", "Mar") ~ "Rnd1",
-        month_abbr %in% c("Apr", "May", "Jun", "Jul", "Aug") ~ "Rnd2",
-        month_abbr %in% c("Sep", "Oct") ~ "Rnd3",
-        month_abbr == "Nov" ~ "Rnd4",
-        month_abbr == "Dec" ~ "Rnd5"
-      ),
-      year == 2023 ~ case_when(
-        month_abbr %in% c("Jan", "Feb", "Mar", "Apr", "May") ~ "Rnd1",
-        month_abbr %in% c("Jun", "Jul", "Aug") ~ "Rnd2",
-        month_abbr %in% c("Sep", "Oct") ~ "Rnd3",
-        month_abbr == "Nov" ~ "Rnd4",
-        month_abbr == "Dec" ~ "Rnd5"
-      ),
+    # Initial roundNumber based on French month names
+    roundNumber_temp = case_when(
+      str_detect(month_name, pattern = "janv") ~ "Rnd1",
+      str_detect(month_name, pattern = "févr") ~ "Rnd2",
+      str_detect(month_name, pattern = "mars") ~ "Rnd3",
+      str_detect(month_name, pattern = "avr") ~ "Rnd4",
+      str_detect(month_name, pattern = "mai") ~ "Rnd5",
+      str_detect(month_name, pattern = "juin") ~ "Rnd6",
+      str_detect(month_name, pattern = "juil") ~ "Rnd7",
+      str_detect(month_name, pattern = "août") ~ "Rnd8",
+      str_detect(month_name, pattern = "sept") ~ "Rnd9",
+      str_detect(month_name, pattern = "oct") ~ "Rnd10",
+      str_detect(month_name, pattern = "nov") ~ "Rnd11",
+      str_detect(month_name, pattern = "déc") ~ "Rnd12",
       TRUE ~ NA_character_
     ),
+    # Refine roundNumber based on year (matching original logic)
+    roundNumber = case_when(
+      year == 2025 & month_name %in% c("janv", "févr", "mars", "avr", "mai") ~ "Rnd1",
+      year == 2025 & month_name %in% c("juin", "juil", "août") ~ "Rnd2",
+      year == 2025 & month_name %in% c("sept", "oct", "nov") ~ "Rnd3",
+      year == 2025 & month_name == "déc" ~ "Rnd4",
+      year == 2024 & month_name %in% c("févr", "mars") ~ "Rnd1",
+      year == 2024 & month_name %in% c("avr", "mai", "juin", "juil", "août") ~ "Rnd2",
+      year == 2024 & month_name %in% c("sept", "oct") ~ "Rnd3",
+      year == 2024 & month_name == "nov" ~ "Rnd4",
+      year == 2024 & month_name == "déc" ~ "Rnd5",
+      year == 2023 & month_name %in% c("janv", "févr", "mars", "avr", "mai") ~ "Rnd1",
+      year == 2023 & month_name %in% c("juin", "juil", "août") ~ "Rnd2",
+      year == 2023 & month_name %in% c("sept", "oct") ~ "Rnd3",
+      year == 2023 & month_name == "nov" ~ "Rnd4",
+      year == 2023 & month_name == "déc" ~ "Rnd5",
+      TRUE ~ roundNumber_temp
+    ),
+    # Assign Response (OBR name) matching original script
+    Response = case_when(
+      year == 2025 & month_name == "janv" ~ "OBR1",
+      year == 2025 & month_name %in% c("févr", "mars", "avr", "mai", "juin", "juil", "août") ~ "NIE-2025-04-01_nOPV_NIDs",
+      year == 2025 & month_name %in% c("sept", "oct", "nov") ~ "NIE-2025-10-01_nOPV_sNID",
+      year == 2024 ~ "NIE-2024-nOPV2",
+      year == 2023 & month_name %in% c("mai", "juin") ~ "NIE-2023-04-02_nOPV",
+      year == 2023 ~ "NIE-2023-07-03_nOPV",
+      year == 2022 & month_name == "juil" ~ "Kwara Response",
+      year == 2022 & month_name == "août" ~ "Kwara Response",
+      year == 2021 & month_name %in% c("mars", "avr") ~ "NGA-2021-013-1",
+      year == 2021 & month_name %in% c("avr", "mai") ~ "NGA-2021-011-1",
+      year == 2021 & month_name == "juin" ~ "NGA-2021-016-1",
+      year == 2021 & month_name %in% c("juil", "août") ~ "NGA-2021-014-1",
+      year == 2021 & month_name == "sept" ~ "NGA-2021-020-2",
+      year == 2020 & month_name %in% c("janv", "févr", "mars") ~ "NGA-20DS-01-2020",
+      year == 2020 & month_name == "déc" ~ "NGA-5DS-10-2020",
+      year == 2021 & month_name == "janv" ~ "NGA-5DS-10-2020",
+      TRUE ~ as.character(siatype)
+    ),
+    # Assign Vaccine.type (matching original script)
     Vaccine.type = case_when(
       year >= 2024 ~ "nOPV2",
-      year == 2023 & month_abbr %in% c("May", "Jun", "Jul", "Sep") ~ "fIPV+nOPV2",
+      year == 2023 & month_name %in% c("mai", "juin", "juil", "sept") ~ "fIPV+nOPV2",
       year == 2023 ~ "nOPV2",
-      year == 2022 & month_abbr == "Jul" ~ "nOPV2",
+      year == 2022 & month_name == "juil" ~ "nOPV2",
       year == 2022 ~ "bOPV",
-      year == 2021 & month_abbr %in% c("Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct") ~ "nOPV2",
+      year == 2021 & month_name %in% c("mars", "avr", "mai", "juin", "juil", "août", "sept", "oct") ~ "nOPV2",
       year == 2021 ~ "bOPV",
+      year == 2020 & month_name %in% c("janv", "mars") ~ "nOPV2",
       TRUE ~ "nOPV2"
     )
   )
 
-# Apply special district rules
+# Apply special district rules (matching LQAS script)
 districts_special <- c("YUSUFARI", "GURI", "BIRINIWA", "KIRI KASAMA", "NGURU", "MACHINA", "KARASUWA", "BARDE")
 province_special <- c("Adamawa", "Bauchi", "Borno", "Jigawa", "Kano", "Yobe")
 
@@ -401,7 +475,7 @@ AK <- AF |>
     start_date = min(date, na.rm = TRUE),
     end_date = max(date, na.rm = TRUE),
     year = first(year),
-    month = first(month_abbr),
+    month = first(month_name),
     u5_present = sum(u5_present, na.rm = TRUE),
     u5_FM = sum(u5_FM, na.rm = TRUE),
     missed_child = sum(missed_child, na.rm = TRUE),
